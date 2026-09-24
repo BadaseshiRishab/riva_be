@@ -325,7 +325,7 @@ app.patch('/api/admin/orders/:id/status', protect, async (req, res) => {
     return res.status(403).json({ message: 'Admin access required' });
   }
 
-  const allowedStatuses = ['Placed', 'Shipped', 'Delivered', 'Cancelled'];
+  const allowedStatuses = ['Placed', 'Shipped', 'Delivered', 'Cancelled', 'Returned'];
   const { status } = req.body;
 
   if (!allowedStatuses.includes(status)) {
@@ -348,7 +348,55 @@ app.patch('/api/admin/orders/:id/status', protect, async (req, res) => {
     order.stockRestored = true;
   }
 
+  if (status === 'Returned' && !order.stockRestored) {
+    for (const item of order.items) {
+      await Product.findByIdAndUpdate(item.productId, { $inc: { stock: item.quantity } });
+    }
+    order.stockRestored = true;
+  }
+
   order.status = status;
+  await order.save();
+  res.json(order);
+});
+
+app.patch('/api/admin/orders/:id/return', protect, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Admin access required' });
+  }
+
+  const { decision, note } = req.body;
+  const normalizedDecision = String(decision || '').toLowerCase();
+
+  if (!['approved', 'rejected'].includes(normalizedDecision)) {
+    return res.status(400).json({ message: 'Return decision must be approved or rejected.' });
+  }
+
+  const order = await Order.findById(req.params.id);
+  if (!order) {
+    return res.status(404).json({ message: 'Order not found' });
+  }
+
+  if (!order.returnRequested) {
+    return res.status(400).json({ message: 'This order has no return request to process.' });
+  }
+
+  if (normalizedDecision === 'approved') {
+    if (!order.stockRestored) {
+      for (const item of order.items) {
+        await Product.findByIdAndUpdate(item.productId, { $inc: { stock: item.quantity } });
+      }
+      order.stockRestored = true;
+    }
+
+    order.status = 'Returned';
+    order.returnStatus = 'Approved';
+    order.returnDecisionNote = note || 'Your return request has been approved and the items have been added back to stock.';
+  } else {
+    order.returnStatus = 'Rejected';
+    order.returnDecisionNote = note || 'Your return request was not approved. Your original order remains as delivered.';
+  }
+
   await order.save();
   res.json(order);
 });
@@ -356,6 +404,59 @@ app.patch('/api/admin/orders/:id/status', protect, async (req, res) => {
 app.get('/api/orders', protect, async (req, res) => {
   const orders = await Order.find({ userId: req.user._id }).sort({ createdAt: -1 });
   res.json(orders);
+});
+
+app.post('/api/orders/:id/return-request', protect, async (req, res) => {
+  const order = await Order.findOne({ _id: req.params.id, userId: req.user._id });
+
+  if (!order) {
+    return res.status(404).json({ message: 'Order not found' });
+  }
+
+  if (order.status !== 'Delivered') {
+    return res.status(400).json({ message: 'Returns can only be requested for delivered orders.' });
+  }
+
+  if (order.returnStatus === 'Approved' || order.returnStatus === 'Rejected') {
+    return res.json(order);
+  }
+
+  const reason = String(req.body?.reason || '').trim();
+
+  order.returnRequested = true;
+  order.returnStatus = 'Requested';
+  order.returnReason = reason;
+  order.returnDecisionNote = '';
+  await order.save();
+
+  res.json(order);
+});
+
+app.patch('/api/orders/:id/cancel', protect, async (req, res) => {
+  const order = await Order.findOne({ _id: req.params.id, userId: req.user._id });
+
+  if (!order) {
+    return res.status(404).json({ message: 'Order not found' });
+  }
+
+  if (order.status === 'Cancelled') {
+    return res.json(order);
+  }
+
+  if (order.status === 'Delivered' || order.status === 'Returned') {
+    return res.status(400).json({ message: 'Delivered or returned orders cannot be cancelled' });
+  }
+
+  if (!order.stockRestored) {
+    for (const item of order.items) {
+      await Product.findByIdAndUpdate(item.productId, { $inc: { stock: item.quantity } });
+    }
+    order.stockRestored = true;
+  }
+
+  order.status = 'Cancelled';
+  await order.save();
+  res.json(order);
 });
 
 app.post('/api/orders', protect, async (req, res) => {

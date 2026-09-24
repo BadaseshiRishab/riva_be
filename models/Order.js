@@ -32,7 +32,24 @@ const orderSchema = new mongoose.Schema(
     status: {
       type: String,
       default: 'Placed',
-      enum: ['Placed', 'Shipped', 'Delivered', 'Cancelled'],
+      enum: ['Placed', 'Shipped', 'Delivered', 'Cancelled', 'Returned'],
+    },
+    returnRequested: {
+      type: Boolean,
+      default: false,
+    },
+    returnStatus: {
+      type: String,
+      default: 'None',
+      enum: ['None', 'Requested', 'Approved', 'Rejected'],
+    },
+    returnReason: {
+      type: String,
+      default: '',
+    },
+    returnDecisionNote: {
+      type: String,
+      default: '',
     },
     stockRestored: {
       type: Boolean,
